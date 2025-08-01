@@ -1,0 +1,924 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Generative Soul v1.04</title>
+    <style>
+        body, html {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            background-color: #000;
+            font-family: 'Inter', sans-serif;
+        }
+        #container {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            cursor: grab;
+            opacity: 0; /* Initially hidden */
+            transition: opacity 1.5s ease;
+        }
+        #container.visible {
+            opacity: 1;
+        }
+        #container:active {
+            cursor: grabbing;
+        }
+        canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+        }
+        #splash-screen {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            background-color: #000;
+            color: #fff;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-family: 'monospace', monospace;
+            z-index: 100;
+            transition: opacity 1.5s ease-out;
+            opacity: 1;
+            cursor: pointer;
+        }
+        /* NEW: Scanline overlay effect */
+        #splash-screen::before {
+            content: " ";
+            display: block;
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(rgba(18, 16, 16, 0) 50%, rgba(0, 0, 0, 0.25) 50%), linear-gradient(90deg, rgba(255, 0, 0, 0.06), rgba(0, 255, 0, 0.02), rgba(0, 0, 255, 0.06));
+            z-index: 2;
+            background-size: 100% 2px, 3px 100%;
+            pointer-events: none;
+            animation: flicker 0.15s infinite;
+        }
+
+        .phosphor-glow {
+            text-shadow: 0 0 5px hsla(260, 100%, 80%, 0.7), 
+                         0 0 10px hsla(300, 100%, 85%, 0.5), 
+                         0 0 15px hsla(220, 100%, 75%, 0.3);
+            color: hsl(260, 100%, 90%);
+            animation: text-flicker 3s linear infinite;
+        }
+        @keyframes entry-fade-in { from { opacity: 0; } to { opacity: 1; } }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.7; } }
+        /* NEW: Flicker animations for glitch effect */
+        @keyframes flicker {
+            0% { opacity: 0.2; }
+            20% { opacity: 0.5; }
+            40% { opacity: 0.3; }
+            60% { opacity: 0.6; }
+            80% { opacity: 0.2; }
+            100% { opacity: 0.5; }
+        }
+        @keyframes text-flicker {
+            0% { opacity: 0.8; }
+            5% { opacity: 0.5; }
+            10% { opacity: 0.9; }
+            15% { opacity: 0.4; }
+            20% { opacity: 1; }
+            100% { opacity: 1; }
+        }
+
+        #splash-lines p {
+            animation: entry-fade-in 0.5s ease forwards;
+            margin: 0.5em 0;
+        }
+        #splash-final {
+            display: none;
+            text-align: center;
+            animation: entry-fade-in 1s ease;
+        }
+        #splash-final h1 {
+            font-size: 2rem;
+            letter-spacing: 0.5em;
+            text-transform: uppercase;
+        }
+        #splash-final .cursor {
+            display: inline-block;
+            width: 0.75rem;
+            height: 1.5rem;
+            background-color: hsl(260, 100%, 90%);
+            animation: pulse 1s infinite;
+            margin-left: 0.25rem;
+            vertical-align: middle;
+        }
+        #splash-prompt {
+            margin-top: 1em;
+            animation: pulse 1.5s infinite;
+            font-size: 1.2rem;
+        }
+    </style>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div id="splash-screen">
+        <div class="phosphor-glow">
+            <div id="splash-prompt">> ▓▓▓▒▒▒░░░</div>
+            <div id="splash-lines" style="display: none;"></div>
+            <div id="splash-final" style="display: none;">
+                <h1>▚▚▚▚▚▚▚▚</h1>
+                <span class="cursor"></span>
+            </div>
+        </div>
+    </div>
+    <div id="container">
+        <canvas id="visualizerCanvas"></canvas>
+    </div>
+
+    <script type="module">
+        // --- AUDIO ENGINE (FROM ARTIFACT) ---
+        let audioCtx, master, analyser;
+        let isRunning = false;
+        let schedulerId;
+        let chordChangeDurationMs;
+
+        (function() {
+            const bpm = 50;
+            const secondsPerBeat = 60 / bpm;
+            const secondsPerBar = secondsPerBeat * 4;
+            const barsPerChord = 8;
+            const chordDuration = barsPerChord * secondsPerBar;
+            chordChangeDurationMs = chordDuration * 1000;
+
+            function midiToHz(m) { return 440 * Math.pow(2, (m - 69) / 12); }
+
+            const chords = [
+                { name: "Fmaj9", padNotes: [65, 69, 72, 76, 79], arpNotes: [74, 77, 81, 84], bassRoot: 41, bassFifth: 48 },
+                { name: "G6", padNotes: [67, 71, 74, 76], arpNotes: [81, 83, 86], bassRoot: 43, bassFifth: 50 },
+                { name: "Em9", padNotes: [64, 67, 71, 74, 78], arpNotes: [81, 83, 86, 90], bassRoot: 40, bassFifth: 47 },
+                { name: "Am(add9)", padNotes: [69, 72, 76, 83], arpNotes: [81, 83, 88], bassRoot: 45, bassFifth: 52 }
+            ];
+            const melodyData = [
+                { midi: 81, start: 0, dur: 2 }, { midi: 79, start: 2, dur: 2 }, { midi: 76, start: 4, dur: 4 }, { midi: 81, start: 8, dur: 3 }, { midi: 83, start: 11, dur: 1 }, { midi: 79, start: 12, dur: 4 }, { midi: 81, start: 16, dur: 2 }, { midi: 84, start: 18, dur: 2 }, { midi: 83, start: 20, dur: 4 }, { midi: 79, start: 24, dur: 2 }, { midi: 76, start: 26, dur: 2 }, { midi: 81, start: 28, dur: 3 }, { midi: 79, start: 31, dur: 1 },
+                { midi: 83, start: 32, dur: 2 }, { midi: 81, start: 34, dur: 2 }, { midi: 79, start: 36, dur: 4 }, { midi: 81, start: 40, dur: 3 }, { midi: 83, start: 43, dur: 1 }, { midi: 86, start: 44, dur: 4 }, { midi: 83, start: 48, dur: 2 }, { midi: 81, start: 50, dur: 2 }, { midi: 76, start: 52, dur: 4 }, { midi: 81, start: 56, dur: 2 }, { midi: 79, start: 58, dur: 2 }, { midi: 83, start: 60, dur: 3 }, { midi: 81, start: 63, dur: 1 },
+                { midi: 81, start: 64, dur: 2 }, { midi: 78, start: 66, dur: 2 }, { midi: 76, start: 68, dur: 4 }, { midi: 81, start: 72, dur: 3 }, { midi: 83, start: 75, dur: 1 }, { midi: 86, start: 76, dur: 4 }, { midi: 83, start: 80, dur: 2 }, { midi: 81, start: 82, dur: 2 }, { midi: 78, start: 84, dur: 4 }, { midi: 81, start: 88, dur: 2 }, { midi: 79, start: 90, dur: 2 }, { midi: 83, start: 92, dur: 3 }, { midi: 81, start: 95, dur: 1 },
+                { midi: 84, start: 96, dur: 2 }, { midi: 83, start: 98, dur: 2 }, { midi: 81, start: 100, dur: 4 }, { midi: 83, start: 104, dur: 3 }, { midi: 84, start: 107, dur: 1 }, { midi: 88, start: 108, dur: 4 }, { midi: 84, start: 112, dur: 2 }, { midi: 83, start: 114, dur: 2 }, { midi: 81, start: 116, dur: 4 }, { midi: 83, start: 120, dur: 2 }, { midi: 79, start: 122, dur: 2 }, { midi: 81, start: 124, dur: 3 }, { midi: 76, start: 127, dur: 1 }
+            ];
+
+            function createPlateImpulse(context, duration = 4.5, decay = 4.0) {
+                const len = Math.floor(context.sampleRate * duration);
+                const impulse = context.createBuffer(2, len, context.sampleRate);
+                for (let c = 0; c < 2; c++) {
+                    const ch = impulse.getChannelData(c);
+                    for (let i = 0; i < len; i++) {
+                        ch[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, decay);
+                    }
+                }
+                return impulse;
+            }
+
+            function createPadLayer() {
+                const pad = { voices: [] };
+                pad.output = audioCtx.createGain();
+                pad.output.gain.value = 0.3;
+                pad.filter = audioCtx.createBiquadFilter();
+                pad.filter.type = "lowpass";
+                pad.filter.frequency.value = 800;
+                pad.filter.Q.value = 0.8;
+                pad.filter.connect(pad.output);
+                pad.setChord = function(notesHz, when, fadeTime = 6.0) {
+                    const t0 = Math.max(when, audioCtx.currentTime);
+                    pad.voices.forEach(v => {
+                        v.gain.gain.cancelScheduledValues(t0);
+                        v.gain.gain.setValueAtTime(v.gain.gain.value, t0);
+                        v.gain.gain.linearRampToValueAtTime(0.0, t0 + fadeTime);
+                        v.stopAt = t0 + fadeTime + 0.1;
+                    });
+                    setTimeout(() => {
+                        pad.voices = pad.voices.filter(v => {
+                            if (audioCtx.currentTime < v.stopAt) return true;
+                            try { v.oscA.stop(); v.oscB.stop(); } catch(e){}
+                            v.oscA.disconnect(); v.oscB.disconnect(); v.gain.disconnect();
+                            return false;
+                        });
+                    }, (fadeTime + 0.5) * 1000);
+                    notesHz.forEach((freq) => {
+                        const gain = audioCtx.createGain();
+                        gain.gain.value = 0.0;
+                        const oA = audioCtx.createOscillator(), oB = audioCtx.createOscillator();
+                        oA.type = oB.type = "triangle";
+                        oA.frequency.setValueAtTime(freq, t0);
+                        oB.frequency.setValueAtTime(freq, t0);
+                        oA.detune.value = -4; oB.detune.value = 4;
+                        oA.connect(gain); oB.connect(gain);
+                        gain.connect(pad.filter);
+                        oA.start(t0); oB.start(t0);
+                        gain.gain.linearRampToValueAtTime(0.15, t0 + fadeTime);
+                        pad.voices.push({ oscA: oA, oscB: oB, gain, stopAt: Infinity });
+                    });
+                };
+                return pad;
+            }
+
+            function createArpLayer() {
+                const arp = {};
+                arp.output = audioCtx.createGain();
+                arp.output.gain.value = 0.20;
+                arp.send = audioCtx.createGain();
+                arp.send.gain.value = 0.5;
+                const eighth = secondsPerBeat / 2;
+                arp.patternIndex = 0;
+                arp.scheduleBar = function(chord, startTime) {
+                    for (let i = 0; i < 8; i++) {
+                        const t = startTime + i * eighth;
+                        const noteMidi = chord.arpNotes[(arp.patternIndex + i) % chord.arpNotes.length];
+                        const freq = midiToHz(noteMidi);
+                        const osc = audioCtx.createOscillator(), gain = audioCtx.createGain();
+                        osc.type = "sine";
+                        osc.frequency.setValueAtTime(freq, t);
+                        gain.gain.setValueAtTime(0.0, t);
+                        gain.gain.linearRampToValueAtTime(0.4, t + 0.08);
+                        gain.gain.linearRampToValueAtTime(0.0, t + eighth * 0.9);
+                        osc.connect(gain);
+                        gain.connect(arp.output);
+                        gain.connect(arp.send);
+                        osc.start(t);
+                        osc.stop(t + eighth);
+                    }
+                    arp.patternIndex = (arp.patternIndex + 8) % chord.arpNotes.length;
+                };
+                return arp;
+            }
+
+            function createBassLayer() {
+                const bass = {};
+                bass.output = audioCtx.createGain();
+                bass.output.gain.value = 0.35;
+                bass.scheduleChord = function(chord, startTime) {
+                    const rootHz = midiToHz(chord.bassRoot), fifthHz = midiToHz(chord.bassFifth);
+                    const osc1 = audioCtx.createOscillator(), osc2 = audioCtx.createOscillator(), g = audioCtx.createGain();
+                    g.gain.setValueAtTime(0.0, startTime);
+                    g.gain.linearRampToValueAtTime(0.2, startTime + chordDuration / 2);
+                    g.gain.linearRampToValueAtTime(0.0, startTime + chordDuration);
+                    osc1.type = osc2.type = "sine";
+                    osc1.frequency.setValueAtTime(rootHz, startTime);
+                    osc2.frequency.setValueAtTime(fifthHz, startTime);
+                    osc1.connect(g); osc2.connect(g);
+                    g.connect(bass.output);
+                    osc1.start(startTime); osc2.start(startTime);
+                    osc1.stop(startTime + chordDuration + 0.1);
+                    osc2.stop(startTime + chordDuration + 0.1);
+                };
+                return bass;
+            }
+
+            function createMelodyLayer() {
+                const melody = {};
+                melody.output = audioCtx.createGain();
+                melody.output.gain.value = 0.35;
+                melody.send = audioCtx.createGain();
+                melody.send.gain.value = 0.7;
+                melody.schedulePhrase = function(startTime) {
+                    const phraseGain = audioCtx.createGain();
+                    phraseGain.gain.setValueAtTime(0.25, startTime);
+                    phraseGain.gain.linearRampToValueAtTime(0.4, startTime + secondsPerBar * 12);
+                    phraseGain.gain.linearRampToValueAtTime(0.3, startTime + secondsPerBar * 28);
+                    phraseGain.connect(melody.output);
+                    phraseGain.connect(melody.send);
+                    melodyData.forEach(note => {
+                        const noteStartTime = startTime + note.start * secondsPerBeat;
+                        const noteDuration = note.dur * secondsPerBeat;
+                        const freq = midiToHz(note.midi);
+                        const osc = audioCtx.createOscillator(), gain = audioCtx.createGain();
+                        osc.type = 'triangle';
+                        osc.frequency.setValueAtTime(freq, noteStartTime);
+                        const a = 0.15, d = 0.3, s = 0.7, r = 1.2;
+                        gain.gain.setValueAtTime(0, noteStartTime);
+                        gain.gain.linearRampToValueAtTime(1.0, noteStartTime + a);
+                        gain.gain.linearRampToValueAtTime(s, noteStartTime + a + d);
+                        gain.gain.setValueAtTime(s, noteStartTime + noteDuration - r);
+                        gain.gain.linearRampToValueAtTime(0, noteStartTime + noteDuration);
+                        osc.connect(gain);
+                        gain.connect(phraseGain);
+                        osc.start(noteStartTime);
+                        osc.stop(noteStartTime + noteDuration + 0.1);
+                    });
+                };
+                return melody;
+            }
+
+            let pad, arp, bass, melody, sched;
+            function createScheduler() {
+                const state = { startTime: audioCtx.currentTime + 0.1, chordIndex: 0, nextChordTime: 0, nextMelodyTime: 0 };
+                state.nextChordTime = state.startTime;
+                state.nextMelodyTime = state.startTime;
+                const lookAheadTime = secondsPerBar * 16;
+                function tick() {
+                    const now = audioCtx.currentTime;
+                    while (state.nextChordTime < now + lookAheadTime) {
+                        const chord = chords[state.chordIndex];
+                        pad.setChord(chord.padNotes.map(midiToHz), state.nextChordTime);
+                        bass.scheduleChord(chord, state.nextChordTime);
+                        for (let b = 0; b < barsPerChord; b++) {
+                            arp.scheduleBar(chord, state.nextChordTime + b * secondsPerBar);
+                        }
+                        state.chordIndex = (state.chordIndex + 1) % chords.length;
+                        state.nextChordTime += chordDuration;
+                    }
+                    while (state.nextMelodyTime < now + lookAheadTime) {
+                        melody.schedulePhrase(state.nextMelodyTime);
+                        state.nextMelodyTime += secondsPerBar * 32;
+                    }
+                    schedulerId = setTimeout(tick, 250);
+                }
+                return { tick };
+            }
+
+            function initAudio() {
+                audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                master = audioCtx.createGain();
+                master.gain.value = 0.7;
+                analyser = audioCtx.createAnalyser();
+                analyser.fftSize = 256;
+                const reverb = audioCtx.createConvolver();
+                reverb.buffer = createPlateImpulse(audioCtx);
+                const reverbReturn = audioCtx.createGain();
+                reverbReturn.gain.value = 0.5;
+                reverb.connect(reverbReturn).connect(master);
+                pad = createPadLayer();
+                arp = createArpLayer();
+                bass = createBassLayer();
+                melody = createMelodyLayer();
+                pad.output.connect(master);
+                arp.output.connect(master);
+                arp.send.connect(reverb);
+                bass.output.connect(master);
+                melody.output.connect(master);
+                melody.send.connect(reverb);
+                master.connect(analyser);
+                analyser.connect(audioCtx.destination);
+                sched = createScheduler();
+            }
+
+            window.startAmbientOrchestra = function() {
+                if (isRunning) return;
+                if (!audioCtx) initAudio();
+                if (audioCtx.state === "suspended") audioCtx.resume();
+                isRunning = true;
+                sched.tick();
+            };
+        })();
+
+        // --- VISUALS ENGINE (FROM UPLOADED FILE) ---
+        import { createNoise2D } from 'https://cdn.jsdelivr.net/npm/simplex-noise@4.0.1/dist/esm/simplex-noise.js';
+
+        const container = document.getElementById('container');
+        const canvas = document.getElementById('visualizerCanvas');
+        const ctx = canvas.getContext('2d');
+        const splashScreen = document.getElementById('splash-screen');
+        const splashPrompt = document.getElementById('splash-prompt');
+        const splashLines = document.getElementById('splash-lines');
+        const splashFinal = document.getElementById('splash-final');
+        const noise2D = createNoise2D();
+
+        let dimensions = { width: 0, height: 0 };
+        let audioStarted = false;
+        let musicStartTime = 0;
+        let particles = [];
+        let rotation = { x: 0, y: 0 };
+        let rotationVelocity = { x: 0, y: 0 };
+        let isDragging = false;
+        let lastMousePosition = { x: 0, y: 0 };
+        let zoom = 1.0;
+        let isAttracting = false;
+        let singularityPosition = { x: 0, y: 0, z: 0 };
+        let lastInteractionTime = performance.now();
+        let gridRotation = { x: 0, y: 0 };
+
+        const SPRING_STRENGTH = 0.002;
+        const DRAG = 0.97;
+
+        const colorPalettes = [
+            [ {h: 50, s: 100, l: 70}, {h: 30, s: 100, l: 65}, {h: 0, s: 100, l: 75} ],
+            [ {h: 260, s: 100, l: 80}, {h: 300, s: 100, l: 85}, {h: 220, s: 100, l: 75} ],
+            [ {h: 150, s: 100, l: 70}, {h: 180, s: 100, l: 65}, {h: 270, s: 100, l: 80} ],
+            [ {h: 200, s: 100, l: 95}, {h: 240, s: 80, l: 90}, {h: 60, s: 100, l: 90} ]
+        ];
+        let currentPaletteIndex = 0;
+        let lastPaletteIndex = 0;
+
+        let isSurgeActive = false;
+        let surgeStartTime = 0;
+        const SURGE_DURATION = 1500;
+
+        // --- UPDATED: New character ramp ---
+        const CHAR_RAMP = '▀▄▌▐▕▔▖▗▘▙▛▜▝▞▟█▉▊▋▍▎▏■□▢▣▤▥▦▩▬▭▮▯▰▱◆◇◈◉○●◐◑◒◓◔◕◖◗';
+        const CHAR_RAMP_MONO = '─│┌┐└┘├┤┬┴┼━┃┏┓┗┛┣┫┳┻╋┄┅┆┇┈┉┊┋═║╔╗╚╝╠╣╦╩╬╭╮╯╰╱╲╳';
+        
+        const FONT_SIZE = 36;
+        const LINE_HEIGHT = 40;
+        let asciiGrid = { cols: 0, rows: 0 };
+        let asciiMouseOffset = { x: 0, y: 0 };
+
+        function MemoryReplay() {
+            this.interactionHistory = [];
+            this.isMemoryReplayActive = false;
+            this.memoryReplayIndex = 0;
+            this.memoryReplayStartTime = 0;
+            this.memoryReplayCooldownTimer = 0;
+            this.isIntroSpokenForCurrentCycle = false;
+            this.MAX_HISTORY_LENGTH = 100;
+            this.ACTIVATION_THRESHOLD = 10000;
+            this.DURATION = 10000;
+            this.COOLDOWN_DURATION = 30000;
+
+            this.record = function(interactionFrame) {
+                const frameWithTimestamp = { ...interactionFrame, timestamp: performance.now() };
+                this.interactionHistory.push(frameWithTimestamp);
+                if (this.interactionHistory.length > this.MAX_HISTORY_LENGTH) {
+                    this.interactionHistory.shift();
+                }
+            };
+
+            this.update = function(idleTime) {
+                const now = performance.now();
+                if (
+                    idleTime >= this.ACTIVATION_THRESHOLD &&
+                    !this.isMemoryReplayActive &&
+                    this.interactionHistory.length > 5 &&
+                    (now - this.memoryReplayCooldownTimer > this.COOLDOWN_DURATION)
+                ) {
+                    this.isMemoryReplayActive = true;
+                    this.memoryReplayStartTime = now;
+                    this.memoryReplayIndex = this.interactionHistory.length - 1;
+                }
+
+                if (this.isMemoryReplayActive && (now - this.memoryReplayStartTime > this.DURATION || this.memoryReplayIndex <= 0)) {
+                    this.isMemoryReplayActive = false;
+                    this.memoryReplayCooldownTimer = now;
+                }
+                
+                if (this.isMemoryReplayActive) {
+                    const replayProgress = (now - this.memoryReplayStartTime) / this.DURATION;
+                    this.memoryReplayIndex = Math.floor((1 - replayProgress) * (this.interactionHistory.length - 1));
+                    this.memoryReplayIndex = Math.max(0, Math.min(this.interactionHistory.length - 1, this.memoryReplayIndex));
+                    return {
+                        isActive: true,
+                        frame: this.interactionHistory[this.memoryReplayIndex]
+                    };
+                }
+
+                return { isActive: false, frame: null };
+            };
+
+            this.reset = function() {
+                this.isMemoryReplayActive = false;
+                this.memoryReplayIndex = 0;
+                this.memoryReplayCooldownTimer = 0;
+            };
+        }
+        const memoryReplay = new MemoryReplay();
+
+        function onResize() {
+            dimensions.width = container.clientWidth;
+            dimensions.height = container.clientHeight;
+            const dpr = window.devicePixelRatio || 1;
+            canvas.width = dimensions.width * dpr;
+            canvas.height = dimensions.height * dpr;
+            canvas.style.width = `${dimensions.width}px`;
+            canvas.style.height = `${dimensions.height}px`;
+            ctx.scale(dpr, dpr);
+            asciiGrid.cols = Math.ceil(dimensions.width / FONT_SIZE) + 6;
+            asciiGrid.rows = Math.ceil(dimensions.height / LINE_HEIGHT) + 6;
+            
+            particles = [];
+            const numParticles = 300;
+            const SPHERE_RADIUS = 150;
+            for (let i = 0; i < numParticles; i++) {
+                const theta = Math.random() * 2 * Math.PI;
+                const phi = Math.acos((Math.random() * 2) - 1);
+                particles.push({
+                    x: SPHERE_RADIUS * Math.sin(phi) * Math.cos(theta),
+                    y: SPHERE_RADIUS * Math.sin(phi) * Math.sin(theta),
+                    z: SPHERE_RADIUS * Math.cos(phi),
+                    originalRadius: SPHERE_RADIUS,
+                    speedX: 0, speedY: 0, speedZ: 0,
+                    size: Math.random() * 1.5 + 0.8,
+                    noiseOffset: Math.random() * 1000,
+                });
+            }
+        }
+
+        function project3D(p, center, rotation, fov) {
+            const translatedX = p.x - center.x;
+            const translatedY = p.y - center.y;
+            const translatedZ = p.z - center.z;
+            const rotY_x = translatedX * Math.cos(rotation.y) - translatedZ * Math.sin(rotation.y);
+            const rotY_z = translatedX * Math.sin(rotation.y) + translatedZ * Math.cos(rotation.y);
+            const rotX_y = translatedY * Math.cos(rotation.x) - rotY_z * Math.sin(rotation.x);
+            const rotX_z = translatedY * Math.sin(rotation.x) + rotY_z * Math.cos(rotation.y);
+            const scale = fov / (fov + rotX_z);
+            return { x: rotY_x * scale, y: rotX_y * scale, scale: scale };
+        }
+
+        function renderHorizonGrid(centerOfMass, rotation, fov) {
+            const currentPalette = colorPalettes[currentPaletteIndex];
+            const baseColor = currentPalette[0];
+            ctx.save();
+            ctx.translate(dimensions.width / 2, dimensions.height / 2);
+
+            const gridSize = 50;
+            const gridLines = 40;
+            const gridDepth = gridLines * gridSize;
+            const gridSpeed = 20;
+            const gridBaseY = 200;
+
+            const time = performance.now() * 0.0003;
+            const zOffset = (performance.now() * gridSpeed / 1000) % gridSize;
+
+            ctx.lineWidth = 1;
+
+            for (let i = 0; i <= gridLines; i++) {
+                const z = (i * gridSize) - gridDepth / 2 + zOffset;
+                
+                const startX_pos = -gridLines * gridSize / 2;
+                const endX_pos = gridLines * gridSize / 2;
+                
+                const swayStart = noise2D(startX_pos * 0.005, z * 0.005 + time) * 40;
+                const swayEnd = noise2D(endX_pos * 0.005, z * 0.005 + time) * 40;
+                
+                const driftStart = Math.sin(z * 0.01 + time * 2) * 30;
+                const driftEnd = Math.sin(z * 0.01 + time * 2) * 30;
+
+                const startH = { x: startX_pos + driftStart, y: gridBaseY + swayStart, z: z };
+                const endH = { x: endX_pos + driftEnd, y: gridBaseY + swayEnd, z: z };
+                const projStartH = project3D(startH, centerOfMass, rotation, fov);
+                const projEndH = project3D(endH, centerOfMass, rotation, fov);
+
+                const alpha = Math.max(0, 1 - (i / gridLines) * 0.8);
+                ctx.strokeStyle = `hsla(${baseColor.h}, ${baseColor.s}%, ${baseColor.l - 10}%, ${alpha * 0.2})`;
+
+                if (projStartH && projEndH) {
+                    ctx.beginPath();
+                    ctx.moveTo(projStartH.x, projStartH.y);
+                    ctx.lineTo(projEndH.x, projEndH.y);
+                    ctx.stroke();
+                }
+
+                const x = i * gridSize - gridLines * gridSize / 2;
+                const startZ_pos = -gridDepth / 2;
+                const endZ_pos = gridDepth / 2;
+
+                const swayVStart = noise2D(x * 0.005, startZ_pos * 0.005 + time) * 40;
+                const swayVEnd = noise2D(x * 0.005, endZ_pos * 0.005 + time) * 40;
+
+                const driftVStart = Math.sin(startZ_pos * 0.01 + time * 2) * 30;
+                const driftVEnd = Math.sin(endZ_pos * 0.01 + time * 2) * 30;
+                
+                const startV = { x: x + driftVStart, y: gridBaseY + swayVStart, z: startZ_pos };
+                const endV = { x: x + driftVEnd, y: gridBaseY + swayVEnd, z: endZ_pos };
+                const projStartV = project3D(startV, centerOfMass, rotation, fov);
+                const projEndV = project3D(endV, centerOfMass, rotation, fov);
+
+                if (projStartV && projEndV) {
+                    ctx.beginPath();
+                    ctx.moveTo(projStartV.x, projStartV.y);
+                    ctx.lineTo(projEndV.x, projEndV.y);
+                    ctx.stroke();
+                }
+            }
+            ctx.restore();
+        }
+
+
+        function animate() {
+            requestAnimationFrame(animate);
+            const now = performance.now();
+            const idleTime = now - lastInteractionTime;
+            const replayState = memoryReplay.update(idleTime);
+
+            if (audioStarted && chordChangeDurationMs) {
+                const elapsedTime = now - musicStartTime;
+                currentPaletteIndex = Math.floor(elapsedTime / chordChangeDurationMs) % colorPalettes.length;
+                if (currentPaletteIndex !== lastPaletteIndex) {
+                    isSurgeActive = true;
+                    surgeStartTime = now;
+                }
+                lastPaletteIndex = currentPaletteIndex;
+            }
+
+            let averageEnergy = 0;
+            if (analyser) {
+                const dataArray = new Uint8Array(analyser.frequencyBinCount);
+                analyser.getByteFrequencyData(dataArray);
+                averageEnergy = dataArray.reduce((sum, val) => sum + val, 0) / dataArray.length / 255;
+            }
+
+            const centerOfMass = { x: 0, y: 0, z: 0 };
+            if (particles.length > 0) {
+                particles.forEach(p => { centerOfMass.x += p.x; centerOfMass.y += p.y; centerOfMass.z += p.z; });
+                centerOfMass.x /= particles.length;
+                centerOfMass.y /= particles.length;
+                centerOfMass.z /= particles.length;
+            }
+
+            const fov = 200 / zoom;
+
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.2)';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            
+            renderHorizonGrid({x:0, y:0, z:0}, gridRotation, fov);
+            renderAsciiBackground(averageEnergy);
+            updatePhysics(replayState);
+            renderWireframe(averageEnergy, centerOfMass, fov);
+            renderSingularity(averageEnergy, replayState);
+        }
+
+        function renderAsciiBackground(averageEnergy) {
+            const currentPalette = colorPalettes[currentPaletteIndex];
+            ctx.save();
+            ctx.translate(dimensions.width / 2, dimensions.height / 2);
+            const time = performance.now() * 0.0001;
+            let intensity = 0.15 + averageEnergy * 4;
+
+            let surgeProgress = 0;
+            if (isSurgeActive) {
+                const elapsed = performance.now() - surgeStartTime;
+                if (elapsed < SURGE_DURATION) {
+                    surgeProgress = elapsed / SURGE_DURATION;
+                    intensity *= (1 + Math.sin(surgeProgress * Math.PI) * 2);
+                } else {
+                    isSurgeActive = false;
+                }
+            }
+
+            ctx.save();
+            const totalGridWidth = asciiGrid.cols * FONT_SIZE;
+            const totalGridHeight = asciiGrid.rows * LINE_HEIGHT;
+            const startX = -totalGridWidth / 2;
+            const startY = -totalGridHeight / 2;
+            ctx.translate(startX + asciiMouseOffset.x, startY + asciiMouseOffset.y);
+            ctx.font = `${FONT_SIZE}px monospace`;
+            const normalizedIntensity = averageEnergy * 2;
+            for (let y = 0; y < asciiGrid.rows; y++) {
+                for (let x = 0; x < asciiGrid.cols; x++) {
+                    let combinedValue = (noise2D(x * 0.04, y * 0.04 - time * 2) + 1) / 2; // Increased time factor
+                    combinedValue = Math.min(combinedValue * intensity, 1.0);
+                    let char = CHAR_RAMP[Math.floor(combinedValue * (CHAR_RAMP.length - 1))];
+                    
+                    if (combinedValue < 0.3 && Math.random() < 0.6) {
+                        char = ' ';
+                    }
+
+                    if (isSurgeActive) {
+                        const dx = x - asciiGrid.cols / 2;
+                        const dy = y - asciiGrid.rows / 2;
+                        const dist = Math.sqrt(dx*dx + dy*dy);
+                        if (dist < surgeProgress * 40) {
+                             char = '▚';
+                        }
+                    }
+
+                    const colorIndex = Math.floor(combinedValue * (currentPalette.length - 0.01));
+                    const baseColor = currentPalette[colorIndex];
+                    let lightness = baseColor.l - 20 + normalizedIntensity * 30;
+                    if (isSurgeActive) {
+                        lightness = 100;
+                    }
+                    let opacity = 0.3 + normalizedIntensity * 0.4;
+                    ctx.fillStyle = `hsla(${baseColor.h}, ${baseColor.s}%, ${lightness}%, ${opacity})`;
+                    ctx.fillText(char, x * FONT_SIZE, y * LINE_HEIGHT);
+                }
+            }
+            ctx.restore();
+            ctx.restore();
+        }
+
+        function updatePhysics(replayState) {
+            let attract = isAttracting;
+            let currentSingularity = singularityPosition;
+
+            if (replayState.isActive && replayState.frame) {
+                attract = true;
+                currentSingularity = replayState.frame.singularityPosition;
+                rotation = replayState.frame.rotation;
+            }
+
+            if (attract) {
+                const G_ATTRACT = 0.02, G_ORBIT = 0.04;
+                particles.forEach(p => {
+                    const dx = currentSingularity.x - p.x;
+                    const dy = currentSingularity.y - p.y;
+                    const dz = (currentSingularity.z || 0) - p.z;
+                    const dist = Math.hypot(dx, dy, dz);
+                    if (dist > 1) {
+                        p.speedX += (dx / dist) * G_ATTRACT - (dy / dist) * G_ORBIT;
+                        p.speedY += (dy / dist) * G_ATTRACT + (dx / dist) * G_ORBIT;
+                        p.speedZ += (dz / dist) * G_ATTRACT;
+                    }
+                });
+            }
+
+            particles.forEach(p => {
+                let surgeFactor = 1.0;
+                if (isSurgeActive) {
+                    const surgeProgress = (performance.now() - surgeStartTime) / SURGE_DURATION;
+                    surgeFactor = 1 + Math.sin(surgeProgress * Math.PI) * 1.5;
+                }
+
+                const targetRadius = p.originalRadius * surgeFactor;
+                const currentDist = Math.hypot(p.x, p.y, p.z);
+                const displacement = currentDist - targetRadius;
+                if (Math.abs(displacement) > 1) {
+                    const springForce = -displacement * SPRING_STRENGTH;
+                    p.speedX += (p.x / currentDist) * springForce;
+                    p.speedY += (p.y / currentDist) * springForce;
+                    p.speedZ += (p.z / currentDist) * springForce;
+                }
+                p.speedX *= DRAG;
+                p.speedY *= DRAG;
+                p.speedZ *= DRAG;
+                p.x += p.speedX; p.y += p.speedY; p.z += p.speedZ;
+            });
+
+            if (!isDragging && !replayState.isActive) {
+                rotation.x += rotationVelocity.x;
+                rotation.y += rotationVelocity.y;
+                rotation.x = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, rotation.x));
+                rotationVelocity.x *= 0.95;
+                rotationVelocity.y *= 0.95;
+            }
+        }
+
+        function renderWireframe(audioPulse, centerOfMass, fov) {
+            const currentPalette = colorPalettes[currentPaletteIndex];
+            ctx.save();
+            ctx.translate(dimensions.width / 2, dimensions.height / 2);
+            const projectedParticles = particles.map(p => ({ ...p, proj: project3D(p, centerOfMass, rotation, fov) }));
+            let maxConnectionDistance = 70 + audioPulse * 100;
+            ctx.lineWidth = 1;
+            for (let i = 0; i < projectedParticles.length; i++) {
+                const p1 = projectedParticles[i];
+                for (let j = i + 1; j < projectedParticles.length; j++) {
+                    const p2 = projectedParticles[j];
+                    const dist3d = Math.hypot(p1.x - p2.x, p1.y - p2.y, p1.z - p2.z);
+                    if (dist3d < maxConnectionDistance) {
+                        const alpha = 1 - (dist3d / maxConnectionDistance);
+                        let colorIndex = Math.floor(alpha * (currentPalette.length - 0.01));
+                        if (isNaN(colorIndex) || colorIndex < 0 || colorIndex >= currentPalette.length) {
+                           colorIndex = 0;
+                        }
+                        const baseColor = currentPalette[colorIndex];
+                        let lightness = baseColor.l - 30 + audioPulse * 25;
+                        let finalAlpha = alpha * (0.3 + audioPulse * 2);
+                        ctx.strokeStyle = `hsla(${baseColor.h}, ${baseColor.s}%, ${lightness}%, ${finalAlpha})`;
+                        ctx.beginPath();
+                        ctx.moveTo(p1.proj.x, p1.proj.y);
+                        ctx.lineTo(p2.proj.x, p2.proj.y);
+                        ctx.stroke();
+                    }
+                }
+            }
+            projectedParticles.forEach(p => {
+                let colorIndex = Math.floor(p.proj.scale * 2 * (currentPalette.length - 0.01)) % currentPalette.length;
+                if (isNaN(colorIndex) || colorIndex < 0) {
+                    colorIndex = 0;
+                }
+                const baseColor = currentPalette[colorIndex];
+                let lightness = baseColor.l + audioPulse * 15;
+                ctx.fillStyle = `hsla(${baseColor.h}, ${baseColor.s}%, ${lightness}%, 0.9)`;
+                ctx.beginPath();
+                ctx.arc(p.proj.x, p.proj.y, Math.max(0, p.size * p.proj.scale), 0, Math.PI * 2);
+                ctx.fill();
+            });
+            ctx.restore();
+        }
+
+        function renderSingularity(audioPulse, replayState) {
+            let attract = isAttracting || (replayState.isActive && replayState.frame);
+            if (!attract) return;
+
+            let currentSingularity = replayState.isActive && replayState.frame ? replayState.frame.singularityPosition : singularityPosition;
+            const currentPalette = colorPalettes[currentPaletteIndex];
+            const baseColor = currentPalette[Math.floor(currentPalette.length / 2)];
+
+            ctx.save();
+            ctx.translate(dimensions.width / 2, dimensions.height / 2);
+            const radius = 5 + audioPulse * 50;
+            const lightness = baseColor.l + 10 + audioPulse * 10;
+            const gradient = ctx.createRadialGradient(currentSingularity.x, currentSingularity.y, 0, currentSingularity.x, currentSingularity.y, radius);
+            gradient.addColorStop(0, `hsla(${baseColor.h}, ${baseColor.s}%, ${lightness}%, 0.7)`);
+            gradient.addColorStop(1, `hsla(${baseColor.h}, ${baseColor.s}%, ${lightness}%, 0)`);
+            ctx.fillStyle = gradient;
+            ctx.beginPath();
+            ctx.arc(currentSingularity.x, currentSingularity.y, radius, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.restore();
+        }
+
+        function resetInactivity() {
+            lastInteractionTime = performance.now();
+            memoryReplay.reset();
+        }
+
+        const splashMessages = [
+            "> ▨▨▨.SYS...", 
+            "> ▧▧▧▧▧▧▧▧▧▧...", 
+            "> ▧▧▧▧▧▧▧▧▧▧...", 
+            "> ▧▧▧▧▧▧▧▧▧▧...", 
+            "> ▧▧▧▧▧▧: [✓]", 
+            "> ▨▨▨▨▨▨"
+        ];
+        function startSplashScreenSequence() {
+            splashPrompt.style.display = 'none';
+            splashLines.style.display = 'block';
+            let currentIndex = 0;
+            const interval = setInterval(() => {
+                if (currentIndex < splashMessages.length) {
+                    const p = document.createElement('p');
+                    p.textContent = splashMessages[currentIndex];
+                    splashLines.appendChild(p);
+                    currentIndex++;
+                } else {
+                    clearInterval(interval);
+                    setTimeout(() => {
+                        splashLines.style.display = 'none';
+                        splashFinal.style.display = 'block';
+                        setTimeout(completeSplashScreen, 2000);
+                    }, 500);
+                }
+            }, 600);
+        }
+
+        function completeSplashScreen() {
+            splashScreen.style.opacity = '0';
+            container.classList.add('visible');
+            setTimeout(() => { splashScreen.style.display = 'none'; }, 1500);
+        }
+
+        new ResizeObserver(onResize).observe(container);
+        container.addEventListener('wheel', (e) => {
+            resetInactivity();
+            e.preventDefault();
+            zoom = Math.max(0.5, Math.min(3.0, zoom + (e.deltaY < 0 ? 0.1 : -0.1)));
+        });
+        container.addEventListener('mousedown', (e) => {
+            resetInactivity();
+            isDragging = true;
+            lastMousePosition = { x: e.clientX, y: e.clientY };
+            rotationVelocity = { x: 0, y: 0 };
+            isAttracting = true;
+            singularityPosition.x = e.clientX - dimensions.width / 2;
+            singularityPosition.y = e.clientY - dimensions.height / 2;
+            singularityPosition.z = 0;
+        });
+        container.addEventListener('mouseup', () => { isDragging = false; isAttracting = false; });
+        container.addEventListener('mouseleave', () => { isDragging = false; isAttracting = false; });
+        container.addEventListener('mousemove', (e) => {
+            resetInactivity();
+            const dx = e.clientX - lastMousePosition.x, dy = e.clientY - lastMousePosition.y;
+            if (isDragging) {
+                rotation.y += dx * 0.005;
+                rotation.x = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, rotation.x + dy * 0.005));
+                rotationVelocity = { x: dy * 0.005, y: dx * 0.005 };
+            }
+            lastMousePosition = { x: e.clientX, y: e.clientY };
+            if(isAttracting) {
+                singularityPosition.x = e.clientX - dimensions.width / 2;
+                singularityPosition.y = e.clientY - dimensions.height / 2;
+                singularityPosition.z = 0;
+            }
+            if (isDragging || isAttracting) {
+                memoryReplay.record({
+                    singularityPosition: { ...singularityPosition },
+                    rotation: { ...rotation }
+                });
+            }
+            const centerX = dimensions.width / 2, centerY = dimensions.height / 2;
+            asciiMouseOffset.x = (e.clientX - centerX) / centerX * -15;
+            asciiMouseOffset.y = (e.clientY - centerY) / centerY * -15;
+
+            gridRotation.y = (e.clientX - centerX) * 0.0002;
+            gridRotation.x = (e.clientY - centerY) * 0.0002;
+        });
+
+        splashScreen.addEventListener('click', () => {
+            if (!audioStarted) {
+                window.startAmbientOrchestra();
+                audioStarted = true;
+                musicStartTime = performance.now();
+            }
+            startSplashScreenSequence();
+        }, { once: true });
+
+        onResize();
+        animate();
+    </script>
+</body>
+</html>

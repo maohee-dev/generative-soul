@@ -1,7 +1,7 @@
 # 🌌 Generative Soul v1.04  
 > An interactive, generative audiovisual experience built with vanilla JavaScript, the Web Audio API, and the HTML5 Canvas.
 
-🔗 [**View Live Demo**](https://your-live-demo-url-here.com)
+🔗 [**View Live Demo**](https://maohee-dev.github.io/generative-soul/)
 
 ---
 

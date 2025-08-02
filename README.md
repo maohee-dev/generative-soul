@@ -60,4 +60,4 @@ Continuous, never-repeating soundscape in four layers:
 ---
 
 ## 📄 License  
-MIT © [Your Name] – see [`LICENSE.md`](LICENSE.md) for details.
+MIT © maohee – see [`LICENSE.md`](LICENSE.md) for details.
